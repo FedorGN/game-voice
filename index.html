@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#100e19">
+  <meta name="description" content="Проведи мотылька между фонарями. Управляй голосом, пробелом или касанием.">
+  <title>Ночной полёт</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="styles.css">
+  <script src="scenery.js" defer></script>
+  <script src="pitch.js" defer></script>
+  <script src="game.js" defer></script>
+</head>
+<body>
+  <main class="game-shell">
+    <header class="masthead">
+      <div class="wordmark">
+        <canvas id="brand-moth" width="72" height="56" aria-hidden="true"></canvas>
+        <span>Ночной полёт</span>
+      </div>
+      <div class="record" aria-label="Лучший счёт">
+        <span class="record-star" aria-hidden="true">✦</span>
+        <span>Рекорд</span>
+        <strong id="record">00</strong>
+      </div>
+    </header>
+
+    <div class="layout">
+      <section class="stage" id="stage" aria-label="Игровое поле">
+        <canvas id="field" aria-hidden="true"></canvas>
+        <div class="hud">
+          <div class="score"><span>Счёт</span><strong id="score">00</strong></div>
+          <button type="button" class="icon-button pause-button" id="pause" aria-label="Пауза" title="Пауза (Esc)" hidden>
+            <span class="pause-icon" aria-hidden="true"></span>
+          </button>
+        </div>
+        <div class="flight-pitch" id="flight-pitch" aria-hidden="true" hidden>
+          <span class="flight-pitch-label flight-pitch-high" id="flight-pitch-high"></span>
+          <span class="flight-pitch-label flight-pitch-low" id="flight-pitch-low"></span>
+          <span class="flight-pitch-marker" id="flight-pitch-marker" hidden></span>
+        </div>
+
+        <div class="overlay" id="overlay">
+          <div class="screen" id="intro">
+            <canvas id="intro-moth" width="240" height="160" aria-hidden="true"></canvas>
+            <h1>Ночной <em>полёт</em></h1>
+            <p>Проведи мотылька между фонарями.</p>
+            <div class="actions">
+              <button class="button primary" id="start-voice" type="button">
+                <span class="mic-icon" aria-hidden="true"></span>Играть голосом
+              </button>
+              <button class="button secondary" id="start-keyboard" type="button">Пробел или тап</button>
+            </div>
+            <p class="error" id="mic-error" role="alert" hidden></p>
+          </div>
+
+          <div class="screen compact" id="setup" hidden>
+            <span class="screen-icon mic-icon" aria-hidden="true"></span>
+            <h2 id="setup-title" tabindex="-1">Подключаем микрофон</h2>
+            <p id="setup-description">Разреши доступ к микрофону в браузере.</p>
+            <div id="calibration-readout" class="calibration-readout" hidden>
+              <span id="calibration-step"></span>
+              <span id="calibration-note">— Гц</span>
+            </div>
+            <progress id="calibration-progress" max="1" value="0" aria-label="Продолжительность устойчивой ноты" hidden></progress>
+            <p id="calibration-message" class="calibration-message" role="status" hidden></p>
+            <div class="actions">
+              <button class="button primary" type="button" id="capture-note" hidden>Задать ноту</button>
+              <button class="button secondary" type="button" id="cancel-setup">В меню</button>
+            </div>
+          </div>
+
+          <div class="screen compact" id="ready" hidden>
+            <h2 id="ready-title" tabindex="-1">Готов к полёту?</h2>
+            <p id="ready-description"></p>
+            <button class="button primary" id="launch" type="button">Начать полёт</button>
+            <button class="button secondary" id="quit-ready" type="button" hidden>В меню</button>
+          </div>
+
+          <div class="screen compact" id="paused" hidden>
+            <h2>Пауза</h2>
+            <div class="actions">
+              <button class="button primary" id="resume" type="button">Продолжить</button>
+              <button class="button secondary" id="quit-paused" type="button">В меню</button>
+            </div>
+          </div>
+
+          <div class="screen compact" id="game-over" hidden>
+            <h2>Полёт окончен</h2>
+            <div class="finish-score">
+              <div><span>Счёт</span><strong id="final-score">00</strong></div>
+              <div><span>Рекорд</span><strong id="final-record">00</strong></div>
+            </div>
+            <div class="actions">
+              <button class="button primary" id="retry" type="button">Ещё полёт</button>
+              <button class="button secondary" id="quit-over" type="button">В меню</button>
+            </div>
+          </div>
+        </div>
+        <div class="stage-legend" aria-hidden="true">
+          <span id="keyboard-legend"><kbd>Пробел</kbd> Взмах</span>
+          <span id="voice-legend" hidden>Выше тон — выше полёт</span>
+          <span><kbd>Esc</kbd> Пауза</span>
+        </div>
+      </section>
+
+      <aside class="controls" aria-labelledby="controls-title">
+        <h2 id="controls-title">Управление</h2>
+        <div class="voice-control">
+          <div class="control-heading">
+            <span class="control-icon"><span class="mic-icon" aria-hidden="true"></span></span>
+            <div>
+              <h3>Микрофон</h3>
+              <p id="mic-status" class="mic-status" role="status">Выключен</p>
+            </div>
+          </div>
+
+          <div class="meter" id="meter" aria-hidden="true">
+            <div class="meter-track"><div class="meter-fill" id="meter-fill"></div></div>
+            <div class="meter-threshold" id="meter-threshold"></div>
+          </div>
+          <div class="meter-labels" aria-hidden="true"><span>Тише</span><span>Громче</span></div>
+
+          <div class="pitch-scale" id="pitch-scale" hidden>
+            <div class="range-heading"><span>Высота тона</span><span class="pitch-value" id="pitch-value">— Гц</span></div>
+            <div class="pitch-track" aria-hidden="true"><span id="pitch-marker" hidden></span></div>
+            <div class="meter-labels"><span id="low-note">Низкая</span><span id="high-note">Высокая</span></div>
+          </div>
+
+          <div class="sensitivity">
+            <div class="range-heading">
+              <label for="sensitivity">Чувствительность</label>
+              <output id="sensitivity-value" for="sensitivity">65%</output>
+            </div>
+            <input id="sensitivity" type="range" min="0" max="100" value="65">
+          </div>
+          <div class="device-field" id="device-field" hidden>
+            <label for="microphone">Устройство ввода</label>
+            <select id="microphone"></select>
+          </div>
+          <button class="button outline" id="calibrate" type="button" disabled>Настроить диапазон голоса</button>
+        </div>
+
+        <div class="keyboard-control">
+          <span class="control-icon"><span class="keyboard-icon" aria-hidden="true"></span></span>
+          <div>
+            <h3>Пробел или тап</h3>
+            <p>Нажми пробел или коснись поля, чтобы взлететь.</p>
+          </div>
+        </div>
+        <p class="privacy">Звук обрабатывается в браузере.</p>
+      </aside>
+    </div>
+  </main>
+</body>
+</html>
