@@ -55,7 +55,7 @@
               <option value="7">7</option>
             </select>
             <label for="immortality">Бессмертие</label>
-            <input id="immortality" type="checkbox">
+            <input id="immortality" type="checkbox" checked>
           </div>
           <button type="button" class="icon-button pause-button" id="pause" aria-label="Пауза" title="Пауза (Esc)" hidden>
             <span class="pause-icon" aria-hidden="true"></span>
@@ -76,6 +76,7 @@
               <button class="button primary" id="start-voice" type="button">
                 <span class="mic-icon" aria-hidden="true"></span>Играть голосом
               </button>
+              <button class="button secondary" id="start-training" type="button">Тренировка</button>
             </div>
             <p class="error" id="mic-error" role="alert" hidden></p>
           </div>
@@ -99,7 +100,20 @@
           <div class="screen compact" id="ready" hidden>
             <h2 id="ready-title" tabindex="-1">Диапазон настроен</h2>
             <p>Сделай короткую паузу, затем запой. В тишине мотылёк сохраняет последнюю высоту. <span id="flight-levels-hint" hidden></span></p>
-            <button class="button secondary" id="quit-ready" type="button">В меню</button>
+            <div class="actions">
+              <button class="button secondary" id="practice-ready" type="button">Тренировка</button>
+              <button class="button secondary" id="quit-ready" type="button">В меню</button>
+            </div>
+          </div>
+
+          <div class="screen training-screen" id="training" hidden>
+            <h2 id="training-title" tabindex="-1">Тренировка</h2>
+            <div class="training-notes" id="training-notes" role="group" aria-label="Целевая нота"></div>
+            <p id="training-feedback" role="status">Спой выбранную ноту</p>
+            <div class="actions">
+              <button class="button primary" id="training-to-flight" type="button">К полёту</button>
+              <button class="button secondary" id="quit-training" type="button">В меню</button>
+            </div>
           </div>
 
           <div class="screen compact" id="paused" hidden>

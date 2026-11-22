@@ -7,6 +7,7 @@ const screens = {
   connecting: document.querySelector("#setup"),
   calibrating: document.querySelector("#setup"),
   ready: document.querySelector("#ready"),
+  training: document.querySelector("#training"),
   paused: document.querySelector("#paused"),
   over: document.querySelector("#game-over"),
 };
@@ -47,6 +48,9 @@ const voiceLegend = document.querySelector("#voice-legend");
 const readyTitle = document.querySelector("#ready-title");
 const quitReadyButton = document.querySelector("#quit-ready");
 const voiceButton = document.querySelector("#start-voice");
+const trainingTitle = document.querySelector("#training-title");
+const trainingNotes = document.querySelector("#training-notes");
+const trainingFeedback = document.querySelector("#training-feedback");
 const overTitle = document.querySelector("#over-title");
 const resumeButton = document.querySelector("#resume");
 
@@ -60,6 +64,9 @@ const FLIGHT_TOP_Y = .15;
 const FLIGHT_BOTTOM_Y = .84;
 const MOTH_RESPONSE_TIME = .075;
 const MOTH_VERTICAL_SPEED = 1100;
+const TRAINING_TOLERANCE = .25;
+const PIANO_ECHO_DELAY_MS = 180;
+const PIANO_TUNING_CENTS = [-5, -5, 0, 2, 7];
 const MIN_RANGE_RATIO = 2 ** (3 / 12);
 const STABLE_NOTE_RATIO = 2 ** (1.35 / 12);
 const MAX_FLIGHT_LEVELS = 7;
@@ -119,7 +126,7 @@ let width = 840;
 let best = readNumber("night-flight-record", 0, Number.MAX_SAFE_INTEGER);
 let difficultyLevel = readNumber(DIFFICULTY_KEY, 5, 10, 1);
 let flightLevelCount = Math.min(MAX_FLIGHT_LEVELS, readNumber(FLIGHT_LEVELS_KEY, 5, 10, 2));
-let immortalityEnabled = readNumber(IMMORTALITY_KEY, 0, 1) === 1;
+let immortalityEnabled = readNumber(IMMORTALITY_KEY, 1, 1) === 1;
 let run;
 let microphone = null;
 let microphoneRequest = 0;
@@ -129,6 +136,8 @@ let savedPitchRange = readSavedPitchRange();
 let pitchRange = savedPitchRange ?? { low: null, notes: null };
 let sensitivityAmount = readNumber("night-flight-sensitivity", 65, 100);
 let voiceFlight;
+let trainingLevel = 0;
+const trainingPlayback = { player: null, quietUntil: 0, failed: false };
 let analysisElapsed = 0;
 let waveformTime = 0;
 
@@ -162,9 +171,8 @@ function maxAvailableFlightLevels() {
   return notes === null ? MAX_FLIGHT_LEVELS : Math.min(MAX_FLIGHT_LEVELS, notes.length);
 }
 
-function pitchLevelPosition(frequency) {
+function noteLevelPosition(pitch) {
   const { notes } = run;
-  const pitch = noteNumberForPitch(frequency);
   const index = notes.findIndex((note) => note >= pitch);
   const upper = index === -1 ? notes.length - 1 : Math.max(1, index);
   const lower = upper - 1;
@@ -207,9 +215,68 @@ function frequencyLabel(frequency) {
   return frequency === null ? "— Гц" : `${Math.round(frequency)} Гц`;
 }
 
+function selectTrainingNote(level) {
+  trainingLevel = level;
+  for (let i = 0; i < trainingNotes.children.length; i++) {
+    trainingNotes.children[i].setAttribute("aria-pressed", String(i === level));
+  }
+  drawFlightPitch();
+}
+
+function stopTrainingPlayback() {
+  const { player } = trainingPlayback;
+  if (!player) return;
+  trainingPlayback.player = null;
+  trainingPlayback.quietUntil = performance.now() + PIANO_ECHO_DELAY_MS;
+  player.pause();
+}
+
+function hearsTrainingPlayback() {
+  return trainingPlayback.player !== null || performance.now() < trainingPlayback.quietUntil;
+}
+
+function playTrainingNote(level) {
+  if (phase !== "training" || document.hidden) return;
+  stopTrainingPlayback();
+  const note = run.notes[level];
+  const octave = clamp(4 + Math.round((note - 69) / 12), 1, PIANO_TUNING_CENTS.length);
+  const sampleNote = 69 + (octave - 4) * 12;
+  const sampleTuning = PIANO_TUNING_CENTS[octave - 1] / 100;
+  const player = new Audio(`assets/piano/A${octave}.wav`);
+  player.preservesPitch = false;
+  player.playbackRate = 2 ** ((note - sampleNote - sampleTuning) / 12);
+  trainingPlayback.player = player;
+  trainingPlayback.failed = false;
+  resetVoiceFlight();
+  analysisElapsed = 0;
+  meterFill.style.width = "0%";
+  updatePitchDisplay(null);
+  selectTrainingNote(level);
+
+  const stop = () => {
+    if (trainingPlayback.player === player) stopTrainingPlayback();
+  };
+  const fail = () => {
+    if (trainingPlayback.player !== player) return;
+    trainingPlayback.failed = true;
+    stopTrainingPlayback();
+    drawFlightPitch();
+  };
+  player.addEventListener("ended", stop);
+  player.addEventListener("pause", stop);
+  player.addEventListener("error", fail);
+  void player.play().catch(fail);
+}
+
+function setTrainingFeedback(message, inTune = false) {
+  if (trainingFeedback.textContent !== message) trainingFeedback.textContent = message;
+  if (trainingFeedback.dataset.inTune !== String(inTune)) trainingFeedback.dataset.inTune = String(inTune);
+}
+
 function drawFlightPitch() {
+  const training = phase === "training";
   const targetGate = run.gates.find((gate) => !gate.scored);
-  const targetLevel = targetGate?.level;
+  const targetLevel = training ? trainingLevel : targetGate?.level;
   const labels = flightPitchLabels.children;
   for (let level = 0; level < labels.length; level++) {
     const label = labels[level];
@@ -217,25 +284,41 @@ function drawFlightPitch() {
     if (label.getAttribute("aria-current") !== current) label.setAttribute("aria-current", current);
   }
 
-  flightPitchWindow.hidden = targetGate === undefined;
-  const safeTop = targetGate ? targetGate.top + MOTH_RADIUS : null;
-  const safeBottom = targetGate ? targetGate.bottom - MOTH_RADIUS : null;
-  if (targetGate) {
+  let safeTop = targetGate ? targetGate.top + MOTH_RADIUS : null;
+  let safeBottom = targetGate ? targetGate.bottom - MOTH_RADIUS : null;
+  if (training) {
+    const note = run.notes[trainingLevel];
+    safeTop = flightLevelY(noteLevelPosition(note + TRAINING_TOLERANCE), run.levelCount);
+    safeBottom = flightLevelY(noteLevelPosition(note - TRAINING_TOLERANCE), run.levelCount);
+  }
+  flightPitchWindow.hidden = safeTop === null;
+  if (safeTop !== null) {
     const top = FIELD_HEIGHT * FLIGHT_TOP_Y;
     const height = FIELD_HEIGHT * (FLIGHT_BOTTOM_Y - FLIGHT_TOP_Y);
-    flightPitchWindow.style.top = `${clamp((safeTop - top) / height, 0, 1) * 100}%`;
-    flightPitchWindow.style.bottom = `${clamp((top + height - safeBottom) / height, 0, 1) * 100}%`;
+    const inset = (portion) => training ? `max(-10px, ${portion * 100}%)` : `${clamp(portion, 0, 1) * 100}%`;
+    flightPitchWindow.style.top = inset((safeTop - top) / height);
+    flightPitchWindow.style.bottom = inset((top + height - safeBottom) / height);
   }
 
   const frequency = voiceFlight.pitch;
   flightPitchMarker.hidden = frequency === null;
-  if (frequency === null) return;
+  if (frequency === null) {
+    if (training) {
+      if (trainingPlayback.failed) setTrainingFeedback("Не удалось проиграть ноту. Попробуй ещё раз.");
+      else setTrainingFeedback(hearsTrainingPlayback() ? "Послушай ноту" : "Спой выбранную ноту");
+    }
+    return;
+  }
 
-  const level = pitchLevelPosition(frequency);
+  const level = noteLevelPosition(noteNumberForPitch(frequency));
   flightPitchMarker.style.setProperty("--pitch-top", flightLevelTop(level));
-  const targetY = flightLevelY(clamp(level, 0, run.levelCount - 1), run.levelCount);
+  const targetY = flightLevelY(training ? level : clamp(level, 0, run.levelCount - 1), run.levelCount);
   const inTune = safeTop !== null && targetY > safeTop && targetY < safeBottom;
   if (flightPitchMarker.dataset.inTune !== String(inTune)) flightPitchMarker.dataset.inTune = String(inTune);
+  if (training) {
+    const direction = targetY > safeBottom ? "Пой выше" : "Пой ниже";
+    setTrainingFeedback(inTune ? "В ноте" : direction, inTune);
+  }
 
   const label = `Частота голоса ${frequencyLabel(frequency)}`;
   if (flightPitchMarker.getAttribute("aria-label") !== label) flightPitchMarker.setAttribute("aria-label", label);
@@ -290,10 +373,11 @@ function showMicError(message = "") {
 
 function listensToVoice(currentPhase) {
   return currentPhase === "calibrating" || currentPhase === "ready" || currentPhase === "playing" ||
-    (currentPhase === "over" && !document.hidden);
+    ((currentPhase === "over" || currentPhase === "training") && !document.hidden);
 }
 
 function setPhase(next) {
+  if (next !== "training" || document.hidden) stopTrainingPlayback();
   phase = next;
   analysisElapsed = 0;
   stage.dataset.phase = next;
@@ -312,10 +396,10 @@ function setPhase(next) {
   }
   pitchScale.hidden = microphone === null;
   pitchValueLabel.textContent = next === "calibrating" ? "Частота" : "Нота";
-  flightPitch.hidden = next !== "ready" && next !== "playing" && next !== "paused";
+  flightPitch.hidden = next !== "ready" && next !== "training" && next !== "playing" && next !== "paused";
   flightPitchMarker.hidden = true;
   updateVoiceLegend();
-  const adjustable = microphone !== null && (next === "ready" || next === "over");
+  const adjustable = microphone !== null && (next === "ready" || next === "over" || next === "training");
   calibrateButton.disabled = !adjustable;
   deviceSelect.disabled = !adjustable;
 
@@ -361,6 +445,7 @@ function resizeField() {
 }
 
 function releaseMicrophone() {
+  stopTrainingPlayback();
   microphoneRequest += 1;
   calibration = null;
   if (microphone) {
@@ -386,11 +471,27 @@ function returnToMenu({ focus = true } = {}) {
   if (focus) voiceButton.focus();
 }
 
-function prepareFlight() {
+function prepareFlight(destination = "ready") {
   resetRun();
   resetVoiceFlight();
-  setPhase("ready");
-  readyTitle.focus({ preventScroll: true });
+  setPhase(destination);
+  if (destination === "training") {
+    trainingPlayback.failed = false;
+    trainingNotes.replaceChildren(...run.notes.map((note, level) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "button secondary training-note";
+      button.textContent = noteName(note);
+      button.title = `Проиграть ${button.textContent}`;
+      button.setAttribute("aria-label", button.title);
+      button.addEventListener("click", () => playTrainingNote(level));
+      return button;
+    }));
+    selectTrainingNote(0);
+    trainingTitle.focus({ preventScroll: true });
+  } else {
+    readyTitle.focus({ preventScroll: true });
+  }
 }
 
 function microphoneError(error) {
@@ -427,7 +528,7 @@ async function updateDevices(request) {
   }
 }
 
-async function startVoice(deviceId = selectedDevice) {
+async function startVoice(deviceId = selectedDevice, destination = "ready") {
   releaseMicrophone();
   showMicError();
   const Audio = window.AudioContext || window.webkitAudioContext;
@@ -485,8 +586,8 @@ async function startVoice(deviceId = selectedDevice) {
         showMicError("Микрофон отключился. Подключи его снова и попробуй ещё раз.");
       });
     });
-    if (pitchRange.notes) prepareFlight();
-    else beginCalibration();
+    if (pitchRange.notes) prepareFlight(destination);
+    else beginCalibration(destination);
     void updateDevices(request);
   } catch (error) {
     stream?.getTracks().forEach((track) => track.stop());
@@ -498,18 +599,20 @@ async function startVoice(deviceId = selectedDevice) {
   }
 }
 
-function beginCalibration() {
+function beginCalibration(destination = "ready") {
   if (!microphone) return;
   pitchRange = { low: null, notes: null };
   resetRun();
   setPhase("calibrating");
   updatePitchRange();
   updatePitchDisplay(null);
+  calibration = { destination };
   showCalibrationStep("low");
 }
 
 function showCalibrationStep(note, message = "") {
-  calibration = { note, capture: null };
+  calibration.note = note;
+  calibration.capture = null;
   const low = note === "low";
   setupTitle.textContent = low ? "Низкая нота" : "Высокая нота";
   setupDescription.textContent = low
@@ -537,7 +640,7 @@ function captureNote() {
 }
 
 function updateCalibration(frequency, delta) {
-  const { note, capture } = calibration;
+  const { note, capture, destination } = calibration;
   if (!capture) return;
   capture.elapsed += delta;
   if (capture.elapsed >= 8) {
@@ -583,7 +686,7 @@ function updateCalibration(frequency, delta) {
     savePitchRange(calibrated);
     updatePitchRange();
     calibration = null;
-    prepareFlight();
+    prepareFlight(destination);
   }
 }
 
@@ -613,9 +716,10 @@ function trackPitch(frequency, delta) {
 }
 
 function updateVoice(delta) {
-  if (!microphone || !listensToVoice(phase)) return;
+  if (!microphone || !listensToVoice(phase) || hearsTrainingPlayback()) return;
   analysisElapsed += delta;
-  const analysisInterval = phase === "playing" ? FLIGHT_ANALYSIS_INTERVAL : ANALYSIS_INTERVAL;
+  const liveFlight = phase === "playing" || phase === "training";
+  const analysisInterval = liveFlight ? FLIGHT_ANALYSIS_INTERVAL : ANALYSIS_INTERVAL;
   if (analysisElapsed < analysisInterval) return;
   const interval = analysisElapsed;
   analysisElapsed = 0;
@@ -625,7 +729,7 @@ function updateVoice(delta) {
   meterFill.style.width = `${meterPosition(level)}%`;
   if (phase === "calibrating") updateCalibration(frequency, interval);
   else trackPitch(frequency, interval);
-  updatePitchDisplay(phase === "playing" ? voiceFlight.pitch : frequency);
+  updatePitchDisplay(phase === "playing" || phase === "training" ? voiceFlight.pitch : frequency);
 }
 
 function pickGateLevel(previousLevel) {
@@ -678,7 +782,7 @@ function startFlight() {
     unusedLevels: new Set(),
     immortal: immortalityEnabled,
   };
-  setMothLevel(clamp(pitchLevelPosition(voiceFlight.pitch), 0, run.levelCount - 1));
+  setMothLevel(clamp(noteLevelPosition(noteNumberForPitch(voiceFlight.pitch)), 0, run.levelCount - 1));
   fillCourse();
   setPhase("playing");
 }
@@ -713,7 +817,7 @@ function moveMoth(delta) {
   const response = 1 - Math.exp(-delta / MOTH_RESPONSE_TIME);
   const previousY = moth.y;
   if (voiceFlight.pitch !== null) {
-    const target = clamp(pitchLevelPosition(voiceFlight.pitch), 0, levelCount - 1);
+    const target = clamp(noteLevelPosition(noteNumberForPitch(voiceFlight.pitch)), 0, levelCount - 1);
     const maxStep = MOTH_VERTICAL_SPEED * delta / flightLevelSpacing(levelCount);
     const step = clamp((target - moth.level) * response, -maxStep, maxStep);
     setMothLevel(moth.level + step);
@@ -783,6 +887,10 @@ function togglePause() {
 }
 
 voiceButton.addEventListener("click", () => { void startVoice(); });
+document.querySelector("#start-training").addEventListener("click", () => { void startVoice(selectedDevice, "training"); });
+document.querySelector("#practice-ready").addEventListener("click", () => prepareFlight("training"));
+document.querySelector("#training-to-flight").addEventListener("click", () => prepareFlight());
+document.querySelector("#quit-training").addEventListener("click", () => returnToMenu());
 captureNoteButton.addEventListener("click", captureNote);
 document.querySelector("#cancel-setup").addEventListener("click", () => returnToMenu());
 quitReadyButton.addEventListener("click", () => returnToMenu());
@@ -790,8 +898,10 @@ document.querySelector("#quit-paused").addEventListener("click", () => returnToM
 document.querySelector("#quit-over").addEventListener("click", () => returnToMenu());
 pauseButton.addEventListener("click", togglePause);
 resumeButton.addEventListener("click", togglePause);
-calibrateButton.addEventListener("click", beginCalibration);
-deviceSelect.addEventListener("change", () => { void startVoice(deviceSelect.value); });
+calibrateButton.addEventListener("click", () => beginCalibration(phase === "training" ? "training" : "ready"));
+deviceSelect.addEventListener("change", () => {
+  void startVoice(deviceSelect.value, phase === "training" ? "training" : "ready");
+});
 difficultySelect.addEventListener("change", () => {
   difficultyLevel = Number(difficultySelect.value);
   storeNumber(DIFFICULTY_KEY, difficultyLevel);
@@ -821,9 +931,10 @@ document.addEventListener("keydown", (event) => {
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && phase === "playing") togglePause();
-  else if (phase === "over") {
+  else if (phase === "over" || phase === "training") {
     resetVoiceFlight();
-    setPhase("over");
+    setPhase(phase);
+    if (phase === "training") drawFlightPitch();
   }
 });
 window.addEventListener("pagehide", () => returnToMenu({ focus: false }));
@@ -852,8 +963,8 @@ function frame(now) {
   waveformTime = now / 1000;
   updateVoice(delta);
   if (phase === "playing") updateFlight(delta);
-  else if (phase === "ready") moveMoth(delta);
-  if (phase === "playing" || phase === "ready") drawFlightPitch();
+  else if (phase === "ready" || phase === "training") moveMoth(delta);
+  if (phase === "playing" || phase === "ready" || phase === "training") drawFlightPitch();
   drawField(ctx, width, phase, run, waveformTime);
   requestAnimationFrame(frame);
 }

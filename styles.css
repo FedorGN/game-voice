@@ -202,6 +202,9 @@ button { color: inherit; }
 .stage[data-phase="over"] .overlay { background: #151021cc; }
 
 .stage[data-phase="ready"] .overlay { background: linear-gradient(90deg, transparent, #151021b8, transparent); }
+.stage[data-phase="training"] .overlay { place-items: center end; padding-inline-start: 80px; background: none; }
+.stage[data-phase="training"] .score,
+.stage[data-phase="training"] .stage-legend { display: none; }
 .screen { width: 100%; text-align: center; }
 .screen > p { color: #e6d9e5; font-size: 1.04rem; margin: 14px 0 26px; text-wrap: balance; }
 
@@ -257,6 +260,21 @@ button { color: inherit; }
 .outline { background: #231c2f; width: 100%; border-color: #594761; }
 .outline:hover { background: #32273e; border-color: #967197; }
 .button:disabled { cursor: default; background: #211b2a; border-color: #393042; color: #a69bb0; box-shadow: none; }
+
+.training-screen {
+  width: min(100%, 352px);
+  padding: 16px;
+  border: 1px solid #63516d;
+  border-radius: 12px;
+  background: #181323ee;
+}
+
+.training-screen h2 { font-size: clamp(1.25rem, 3vw, 2rem); }
+.training-notes { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px; }
+.training-note { min-width: 40px; min-height: 36px; padding: 5px 8px; }
+.training-note[aria-pressed="true"] { color: #e4f7db; background: #29443b; border-color: #8bb895; }
+.training-screen > p { margin: 12px 0; font-size: .9rem; }
+.training-screen > p[data-in-tune="true"] { color: #bfe9bf; }
 
 .mic-icon {
   position: relative;
@@ -473,6 +491,9 @@ select {
   .hud { inset: 16px 14px auto; }
   .flight-pitch { inset-inline-start: 49px; }
   .flight-pitch-label { inset-inline: auto 16px; font-size: .7rem; }
+  .stage[data-phase="training"] .overlay { place-items: end; padding: 12px 12px 18px 74px; }
+  .training-screen { padding: 10px; }
+  .training-screen .actions .button { min-height: 36px; }
   .score strong { font-size: 2rem; }
   .screen h1 { font-size: clamp(2.55rem, 9vw, 4.4rem); }
 }
