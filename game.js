@@ -12,6 +12,11 @@ const screens = {
 };
 const scoreLabel = document.querySelector("#score");
 const recordLabel = document.querySelector("#record");
+const flightSettings = document.querySelector("#flight-settings");
+const difficultySelect = document.querySelector("#difficulty");
+const flightLevelsSelect = document.querySelector("#flight-levels");
+const flightLevelsHint = document.querySelector("#flight-levels-hint");
+const immortalityToggle = document.querySelector("#immortality");
 const pauseButton = document.querySelector("#pause");
 const micStatus = document.querySelector("#mic-status");
 const micError = document.querySelector("#mic-error");
@@ -31,38 +36,47 @@ const calibrationNote = document.querySelector("#calibration-note");
 const calibrationMessage = document.querySelector("#calibration-message");
 const captureNoteButton = document.querySelector("#capture-note");
 const pitchScale = document.querySelector("#pitch-scale");
+const pitchValueLabel = document.querySelector("#pitch-value-label");
 const pitchValue = document.querySelector("#pitch-value");
 const pitchMarker = document.querySelector("#pitch-marker");
 const flightPitch = document.querySelector("#flight-pitch");
+const flightPitchWindow = document.querySelector("#flight-pitch-window");
+const flightPitchLabels = document.querySelector("#flight-pitch-labels");
 const flightPitchMarker = document.querySelector("#flight-pitch-marker");
 const voiceLegend = document.querySelector("#voice-legend");
-const keyboardLegend = document.querySelector("#keyboard-legend");
 const readyTitle = document.querySelector("#ready-title");
-const readyDescription = document.querySelector("#ready-description");
 const quitReadyButton = document.querySelector("#quit-ready");
 const voiceButton = document.querySelector("#start-voice");
-const launchButton = document.querySelector("#launch");
-const retryButton = document.querySelector("#retry");
+const overTitle = document.querySelector("#over-title");
 const resumeButton = document.querySelector("#resume");
 
 const MOTH_RADIUS = 15;
-const FLAP_VELOCITY = -282;
-const GRAVITY = 720;
 const NOTE_HOLD_TIME = .78;
 const ANALYSIS_INTERVAL = 1 / 30;
-const VOICE_GRACE = .18;
-const VOICE_TOP_Y = .15;
-const VOICE_BOTTOM_Y = .84;
+const FLIGHT_ANALYSIS_INTERVAL = 1 / 75;
+const VOICE_START_SILENCE = .18;
+const VOICE_GRACE = .10;
+const FLIGHT_TOP_Y = .15;
+const FLIGHT_BOTTOM_Y = .84;
+const MOTH_RESPONSE_TIME = .075;
+const MOTH_VERTICAL_SPEED = 1100;
 const MIN_RANGE_RATIO = 2 ** (3 / 12);
 const STABLE_NOTE_RATIO = 2 ** (1.35 / 12);
+const MAX_FLIGHT_LEVELS = 7;
+const RECOIL_DURATION = .34;
+const MAX_RECOIL_DISTANCE = 140;
+const DIFFICULTY_KEY = "night-flight-difficulty";
+const FLIGHT_LEVELS_KEY = "night-flight-levels";
+const IMMORTALITY_KEY = "night-flight-immortality";
+const PITCH_RANGE_KEY = "night-flight-pitch-range";
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 const formatScore = (score) => String(score).padStart(2, "0");
 
-function readNumber(key, fallback, max) {
+function readNumber(key, fallback, max, min = 0) {
   try {
     const value = localStorage.getItem(key);
     const number = Number(value);
-    return value !== null && Number.isInteger(number) && number >= 0 && number <= max
+    return value !== null && Number.isInteger(number) && number >= min && number <= max
       ? number
       : fallback;
   } catch {
@@ -78,23 +92,48 @@ function storeNumber(key, number) {
   }
 }
 
+function readSavedPitchRange() {
+  try {
+    const { low, high } = JSON.parse(localStorage.getItem(PITCH_RANGE_KEY)) ?? {};
+    if (!Number.isFinite(low) || !Number.isFinite(high) || low < MIN_PITCH_HZ ||
+        high > MAX_PITCH_HZ || high < low * MIN_RANGE_RATIO) return null;
+
+    const notes = naturalNotesInRange(low, high);
+    return notes.length >= 2 ? { low, notes } : null;
+  } catch {
+    return null;
+  }
+}
+
+function savePitchRange(high) {
+  savedPitchRange = pitchRange;
+  try {
+    localStorage.setItem(PITCH_RANGE_KEY, JSON.stringify({ low: pitchRange.low, high }));
+  } catch {
+    // Keep the completed calibration for this session if storage is unavailable.
+  }
+}
+
 let phase = "menu";
-let mode = "keyboard";
 let width = 840;
 let best = readNumber("night-flight-record", 0, Number.MAX_SAFE_INTEGER);
+let difficultyLevel = readNumber(DIFFICULTY_KEY, 5, 10, 1);
+let flightLevelCount = Math.min(MAX_FLIGHT_LEVELS, readNumber(FLIGHT_LEVELS_KEY, 5, 10, 2));
+let immortalityEnabled = readNumber(IMMORTALITY_KEY, 0, 1) === 1;
 let run;
 let microphone = null;
 let microphoneRequest = 0;
 let selectedDevice = "";
 let calibration = null;
-let pitchRange = { low: null, high: null };
+let savedPitchRange = readSavedPitchRange();
+let pitchRange = savedPitchRange ?? { low: null, notes: null };
 let sensitivityAmount = readNumber("night-flight-sensitivity", 65, 100);
 let voiceFlight;
 let analysisElapsed = 0;
 let waveformTime = 0;
 
-function resetVoiceFlight() {
-  voiceFlight = { armed: false, notes: [], pitch: null, voicedFor: 0, silence: 0 };
+function resetVoiceFlight(silence = 0) {
+  voiceFlight = { armed: silence >= VOICE_START_SILENCE, notes: [], pitch: null, voicedFor: 0, silence };
 }
 
 function minimumMicLevel() {
@@ -118,42 +157,124 @@ function medianNote(notes) {
   return (sorted[middle] + sorted[Math.ceil(sorted.length / 2) - 1]) / 2;
 }
 
-function pitchFraction(frequency) {
-  const { low, high } = pitchRange;
-  return clamp(Math.log(frequency / low) / Math.log(high / low), 0, 1);
+function maxAvailableFlightLevels() {
+  const { notes } = pitchRange;
+  return notes === null ? MAX_FLIGHT_LEVELS : Math.min(MAX_FLIGHT_LEVELS, notes.length);
+}
+
+function pitchLevelPosition(frequency) {
+  const { notes } = run;
+  const pitch = noteNumberForPitch(frequency);
+  const index = notes.findIndex((note) => note >= pitch);
+  const upper = index === -1 ? notes.length - 1 : Math.max(1, index);
+  const lower = upper - 1;
+  return lower + (pitch - notes[lower]) / (notes[upper] - notes[lower]);
+}
+
+function flightLevelSpacing(levelCount) {
+  return FIELD_HEIGHT * (FLIGHT_BOTTOM_Y - FLIGHT_TOP_Y) / (levelCount - 1);
+}
+
+function flightLevelY(level, levelCount) {
+  return FIELD_HEIGHT * FLIGHT_BOTTOM_Y - level * flightLevelSpacing(levelCount);
+}
+
+function flightLevelTop(level) {
+  return `${(1 - level / (run.levelCount - 1)) * 100}%`;
+}
+
+function setMothLevel(level) {
+  run.moth.level = level;
+  run.moth.y = flightLevelY(level, run.levelCount);
+}
+
+function drawFlightPitchLabels() {
+  flightPitch.style.setProperty("--flight-pitch-step", `${100 / (run.levelCount - 1)}%`);
+  flightPitchLabels.replaceChildren(...run.notes.map((note, level) => {
+    const label = document.createElement("span");
+    label.className = "flight-pitch-label";
+    label.style.top = flightLevelTop(level);
+    label.textContent = noteName(note);
+    return label;
+  }));
 }
 
 function noteLabel(frequency) {
+  return frequency === null ? "—" : noteName(nearestNaturalNote(frequency));
+}
+
+function frequencyLabel(frequency) {
   return frequency === null ? "— Гц" : `${Math.round(frequency)} Гц`;
 }
 
+function drawFlightPitch() {
+  const targetGate = run.gates.find((gate) => !gate.scored);
+  const targetLevel = targetGate?.level;
+  const labels = flightPitchLabels.children;
+  for (let level = 0; level < labels.length; level++) {
+    const label = labels[level];
+    const current = String(level === targetLevel);
+    if (label.getAttribute("aria-current") !== current) label.setAttribute("aria-current", current);
+  }
+
+  flightPitchWindow.hidden = targetGate === undefined;
+  const safeTop = targetGate ? targetGate.top + MOTH_RADIUS : null;
+  const safeBottom = targetGate ? targetGate.bottom - MOTH_RADIUS : null;
+  if (targetGate) {
+    const top = FIELD_HEIGHT * FLIGHT_TOP_Y;
+    const height = FIELD_HEIGHT * (FLIGHT_BOTTOM_Y - FLIGHT_TOP_Y);
+    flightPitchWindow.style.top = `${clamp((safeTop - top) / height, 0, 1) * 100}%`;
+    flightPitchWindow.style.bottom = `${clamp((top + height - safeBottom) / height, 0, 1) * 100}%`;
+  }
+
+  const frequency = voiceFlight.pitch;
+  flightPitchMarker.hidden = frequency === null;
+  if (frequency === null) return;
+
+  const level = pitchLevelPosition(frequency);
+  flightPitchMarker.style.setProperty("--pitch-top", flightLevelTop(level));
+  const targetY = flightLevelY(clamp(level, 0, run.levelCount - 1), run.levelCount);
+  const inTune = safeTop !== null && targetY > safeTop && targetY < safeBottom;
+  if (flightPitchMarker.dataset.inTune !== String(inTune)) flightPitchMarker.dataset.inTune = String(inTune);
+
+  const label = `Частота голоса ${frequencyLabel(frequency)}`;
+  if (flightPitchMarker.getAttribute("aria-label") !== label) flightPitchMarker.setAttribute("aria-label", label);
+}
+
 function updatePitchDisplay(frequency) {
-  const label = noteLabel(frequency);
+  const calibrating = phase === "calibrating";
+  const label = calibrating ? frequencyLabel(frequency) : noteLabel(frequency);
   if (pitchValue.textContent !== label) pitchValue.textContent = label;
-  if (phase === "calibrating" && calibrationNote.textContent !== label) calibrationNote.textContent = label;
-  const hasPosition = frequency !== null && pitchRange.high !== null;
+  if (calibrating && calibrationNote.textContent !== label) calibrationNote.textContent = label;
+  const { notes } = pitchRange;
+  const hasPosition = frequency !== null && notes !== null;
   pitchMarker.hidden = !hasPosition;
-  flightPitchMarker.hidden = !hasPosition;
   if (hasPosition) {
-    const position = pitchFraction(frequency) * 100;
-    pitchMarker.style.left = `${position}%`;
-    flightPitchMarker.style.top = `${100 - position}%`;
+    const low = notes[0];
+    const position = (noteNumberForPitch(frequency) - low) / (notes.at(-1) - low);
+    pitchMarker.style.left = `${clamp(position, 0, 1) * 100}%`;
   }
 }
 
 function updatePitchRange() {
-  const low = pitchRange.low === null ? "Низкая" : noteLabel(pitchRange.low);
-  const high = pitchRange.high === null ? "Высокая" : noteLabel(pitchRange.high);
+  const { notes } = pitchRange;
+  const low = notes ? noteName(notes[0]) : (pitchRange.low === null ? "Низкая" : frequencyLabel(pitchRange.low));
+  const high = notes ? noteName(notes.at(-1)) : "Высокая";
   document.querySelector("#low-note").textContent = low;
   document.querySelector("#high-note").textContent = high;
-  document.querySelector("#flight-pitch-low").textContent = low;
-  document.querySelector("#flight-pitch-high").textContent = high;
+
+  const maximum = maxAvailableFlightLevels();
+  for (const option of flightLevelsSelect.options) option.disabled = Number(option.value) > maximum;
+  flightLevelsSelect.value = String(Math.min(flightLevelCount, maximum));
+  flightLevelsHint.hidden = maximum === MAX_FLIGHT_LEVELS;
+  flightLevelsHint.textContent = flightLevelsHint.hidden ? "" : `В этом диапазоне доступно до ${maximum} уровней.`;
+  flightLevelsSelect.title = flightLevelsHint.textContent;
 }
 
 function updateVoiceLegend(silent = false) {
   if (voiceLegend.dataset.silent === String(silent)) return;
   voiceLegend.dataset.silent = String(silent);
-  voiceLegend.textContent = silent ? "Спой, чтобы удержать высоту" : "Выше тон — выше полёт";
+  voiceLegend.textContent = silent ? "В тишине высота сохраняется" : "Выше тон — выше полёт";
 }
 
 function setMicStatus(message, kind = "off") {
@@ -167,15 +288,21 @@ function showMicError(message = "") {
   if (message) setMicStatus("Недоступен", "error");
 }
 
+function listensToVoice(currentPhase) {
+  return currentPhase === "calibrating" || currentPhase === "ready" || currentPhase === "playing" ||
+    (currentPhase === "over" && !document.hidden);
+}
+
 function setPhase(next) {
   phase = next;
   analysisElapsed = 0;
   stage.dataset.phase = next;
   overlay.hidden = next === "playing";
   pauseButton.hidden = next !== "playing";
+  flightSettings.hidden = next !== "menu" && next !== "ready" && next !== "over";
   Object.values(screens).forEach((screen) => { screen.hidden = screen !== screens[next]; });
 
-  const active = next === "calibrating" || next === "ready" || next === "playing";
+  const active = listensToVoice(next);
   if (microphone) {
     microphone.stream.getAudioTracks().forEach((track) => { track.enabled = active; });
     if (!active) {
@@ -184,10 +311,9 @@ function setPhase(next) {
     }
   }
   pitchScale.hidden = microphone === null;
-  flightPitch.hidden = mode !== "voice" || pitchRange.high === null ||
-    (next !== "ready" && next !== "playing" && next !== "paused");
-  voiceLegend.hidden = mode !== "voice" || next === "menu";
-  keyboardLegend.hidden = !voiceLegend.hidden;
+  pitchValueLabel.textContent = next === "calibrating" ? "Частота" : "Нота";
+  flightPitch.hidden = next !== "ready" && next !== "playing" && next !== "paused";
+  flightPitchMarker.hidden = true;
   updateVoiceLegend();
   const adjustable = microphone !== null && (next === "ready" || next === "over");
   calibrateButton.disabled = !adjustable;
@@ -200,13 +326,20 @@ function setPhase(next) {
 }
 
 function resetRun() {
+  const levelCount = Math.min(flightLevelCount, maxAvailableFlightLevels());
+  const { notes } = pitchRange;
   run = {
     elapsed: 0,
     score: 0,
-    moth: { x: mothX(), y: FIELD_HEIGHT * .49, velocity: 0 },
+    levelCount,
+    notes: notes ? Array.from({ length: levelCount }, (_, level) =>
+      notes[Math.round((notes.length - 1) * level / (levelCount - 1))]) : [],
+    moth: { x: mothX(), tilt: 0 },
     gates: [],
-    particles: [],
+    recoil: null,
   };
+  setMothLevel((run.levelCount - 1) / 2);
+  drawFlightPitchLabels();
   scoreLabel.textContent = formatScore(0);
 }
 
@@ -240,7 +373,7 @@ function releaseMicrophone() {
   pitchScale.hidden = true;
   flightPitch.hidden = true;
   deviceField.hidden = true;
-  pitchRange = { low: null, high: null };
+  pitchRange = savedPitchRange ?? { low: null, notes: null };
   updatePitchRange();
   updatePitchDisplay(null);
 }
@@ -248,31 +381,16 @@ function releaseMicrophone() {
 function returnToMenu({ focus = true } = {}) {
   releaseMicrophone();
   showMicError();
-  mode = "keyboard";
   resetRun();
   setPhase("menu");
   if (focus) voiceButton.focus();
 }
 
-function prepareFlight(inputMode) {
-  mode = inputMode;
+function prepareFlight() {
   resetRun();
   resetVoiceFlight();
-  const singing = mode === "voice";
-  readyTitle.textContent = singing ? "Диапазон настроен" : "Готов к полёту?";
-  readyDescription.textContent = singing
-    ? "Сделай короткую паузу, затем запой. Тяни ноту, чтобы удерживать высоту."
-    : "Нажми пробел или коснись поля.";
-  launchButton.hidden = singing;
-  quitReadyButton.hidden = !singing;
   setPhase("ready");
-  (singing ? readyTitle : launchButton).focus({ preventScroll: true });
-}
-
-function startKeyboard() {
-  releaseMicrophone();
-  showMicError();
-  prepareFlight("keyboard");
+  readyTitle.focus({ preventScroll: true });
 }
 
 function microphoneError(error) {
@@ -287,7 +405,7 @@ function microphoneError(error) {
     case "AbortError":
       return "Не удалось открыть микрофон. Проверь доступ в системе и попробуй снова.";
     default:
-      return "Не удалось подключить микрофон. Можно играть пробелом или тапом.";
+      return "Не удалось подключить микрофон. Проверь подключение и попробуй снова.";
   }
 }
 
@@ -314,12 +432,11 @@ async function startVoice(deviceId = selectedDevice) {
   showMicError();
   const Audio = window.AudioContext || window.webkitAudioContext;
   if (!window.isSecureContext || !navigator.mediaDevices?.getUserMedia || !Audio) {
-    showMicError("Для голосового режима открой игру через localhost или HTTPS в браузере с доступом к микрофону.");
+    showMicError("Открой игру через localhost или HTTPS в браузере с доступом к микрофону.");
     return;
   }
 
   const request = microphoneRequest;
-  mode = "voice";
   setupTitle.textContent = "Подключаем микрофон";
   setupDescription.textContent = "Разреши доступ к микрофону в браузере.";
   calibrationReadout.hidden = true;
@@ -365,10 +482,11 @@ async function startVoice(deviceId = selectedDevice) {
         if (microphone?.stream !== stream) return;
         returnToMenu({ focus: false });
         selectedDevice = "";
-        showMicError("Микрофон отключился. Подключи его снова или играй пробелом.");
+        showMicError("Микрофон отключился. Подключи его снова и попробуй ещё раз.");
       });
     });
-    beginCalibration();
+    if (pitchRange.notes) prepareFlight();
+    else beginCalibration();
     void updateDevices(request);
   } catch (error) {
     stream?.getTracks().forEach((track) => track.stop());
@@ -382,7 +500,7 @@ async function startVoice(deviceId = selectedDevice) {
 
 function beginCalibration() {
   if (!microphone) return;
-  pitchRange = { low: null, high: null };
+  pitchRange = { low: null, notes: null };
   resetRun();
   setPhase("calibrating");
   updatePitchRange();
@@ -456,18 +574,26 @@ function updateCalibration(frequency, delta) {
   } else if (calibrated < pitchRange.low * MIN_RANGE_RATIO) {
     showCalibrationStep("high", "Возьми ноту заметно выше первой и попробуй ещё раз.");
   } else {
-    pitchRange.high = calibrated;
+    const notes = naturalNotesInRange(pitchRange.low, calibrated);
+    if (notes.length < 2) {
+      showCalibrationStep("high", "Нужно хотя бы две ноты из До, Ре, Ми, Фа, Соль, Ля и Си. Попробуй взять ноту выше.");
+      return;
+    }
+    pitchRange.notes = notes;
+    savePitchRange(calibrated);
     updatePitchRange();
     calibration = null;
-    prepareFlight("voice");
+    prepareFlight();
   }
 }
 
 function trackPitch(frequency, delta) {
+  const waitingForNote = phase === "ready" || phase === "over";
   if (frequency === null) {
     voiceFlight.voicedFor = 0;
     voiceFlight.silence += delta;
-    if (voiceFlight.silence >= VOICE_GRACE) {
+    const grace = waitingForNote ? VOICE_START_SILENCE : VOICE_GRACE;
+    if (voiceFlight.silence >= grace) {
       voiceFlight.pitch = null;
       voiceFlight.notes.length = 0;
       voiceFlight.armed = true;
@@ -478,15 +604,19 @@ function trackPitch(frequency, delta) {
     voiceFlight.notes.push(frequency);
     if (voiceFlight.notes.length > 3) voiceFlight.notes.shift();
     voiceFlight.pitch = medianNote(voiceFlight.notes);
-    if (phase === "ready" && voiceFlight.armed && voiceFlight.voicedFor >= .09) startFlight();
+    if (waitingForNote && voiceFlight.armed && voiceFlight.voicedFor >= .09) {
+      if (phase === "over") resetRun();
+      startFlight();
+    }
   }
   if (phase === "playing") updateVoiceLegend(voiceFlight.pitch === null);
 }
 
 function updateVoice(delta) {
-  if (!microphone || (phase !== "calibrating" && phase !== "ready" && phase !== "playing")) return;
+  if (!microphone || !listensToVoice(phase)) return;
   analysisElapsed += delta;
-  if (analysisElapsed < ANALYSIS_INTERVAL) return;
+  const analysisInterval = phase === "playing" ? FLIGHT_ANALYSIS_INTERVAL : ANALYSIS_INTERVAL;
+  if (analysisElapsed < analysisInterval) return;
   const interval = analysisElapsed;
   analysisElapsed = 0;
   const { analyser, samples, analyze } = microphone;
@@ -498,42 +628,59 @@ function updateVoice(delta) {
   updatePitchDisplay(phase === "playing" ? voiceFlight.pitch : frequency);
 }
 
+function pickGateLevel(previousLevel) {
+  const { unusedLevels, levelChange } = run.course;
+  const distance = (run.levelCount - 1) * levelChange * (.8 + .2 * Math.random());
+  const targetShift = Math.max(1, Math.floor(distance + Math.random()));
+  const options = [...unusedLevels].filter((level) => level !== previousLevel);
+  const difference = (level) => Math.abs(Math.abs(level - previousLevel) - targetShift);
+  const minimum = Math.min(...options.map(difference));
+  const closest = options.filter((level) => difference(level) === minimum);
+  return closest[Math.floor(Math.random() * closest.length)];
+}
+
 function addGate(x) {
-  const difficulty = Math.min(1, run.score / 35);
+  const { unusedLevels, halfGap } = run.course;
+  if (unusedLevels.size === 0) {
+    for (let level = 0; level < run.levelCount; level++) unusedLevels.add(level);
+  }
   const previous = run.gates.at(-1);
-  const center = previous
-    ? clamp(previous.center + (Math.random() - .5) * 190, 168, 395)
-    : FIELD_HEIGHT / 2;
-  run.gates.push({ x, center, gap: 204 - 35 * difficulty, phase: Math.random() * Math.PI * 2, scored: false });
+  const level = previous ? pickGateLevel(previous.level) : Math.round(run.moth.level);
+  unusedLevels.delete(level);
+
+  const center = flightLevelY(level, run.levelCount);
+  run.gates.push({
+    x,
+    level,
+    top: Math.max(LANTERN_HEIGHT, center - halfGap),
+    bottom: Math.min(FIELD_HEIGHT - LANTERN_HEIGHT, center + halfGap),
+    phase: Math.random() * Math.PI * 2,
+    scored: false,
+  });
 }
 
 function fillCourse() {
   if (run.gates.length === 0) addGate(Math.min(width + 37, run.moth.x + 395));
   while (run.gates.at(-1).x < width + 32) {
-    addGate(run.gates.at(-1).x + 285 + Math.random() * 48);
+    addGate(run.gates.at(-1).x + run.course.spacing + Math.random() * 48);
   }
 }
 
 function startFlight() {
+  const level = difficultyLevel - 1;
+  const difficulty = level / 9;
+  const tolerance = Math.min(70 - 20 * difficulty, flightLevelSpacing(run.levelCount) * (.48 - .12 * difficulty));
+  run.course = {
+    speed: 130 + level * 12,
+    spacing: 337 - level * 9,
+    levelChange: .2 + difficulty * .8,
+    halfGap: MOTH_RADIUS + tolerance,
+    unusedLevels: new Set(),
+    immortal: immortalityEnabled,
+  };
+  setMothLevel(clamp(pitchLevelPosition(voiceFlight.pitch), 0, run.levelCount - 1));
   fillCourse();
   setPhase("playing");
-}
-
-function flap() {
-  if (mode !== "keyboard") return;
-  if (phase === "ready") startFlight();
-  if (phase !== "playing") return;
-  run.moth.velocity = FLAP_VELOCITY;
-  for (let n = 0; n < 7; n++) {
-    run.particles.push({
-      x: run.moth.x + (Math.random() - .5) * 14,
-      y: run.moth.y + (Math.random() - .5) * 15,
-      dx: -54 - Math.random() * 110,
-      dy: (Math.random() - .36) * 65,
-      life: .28 + Math.random() * .31,
-      size: 1 + Math.random() * 1.65,
-    });
-  }
 }
 
 function circleHitsBox(moth, left, top, right, bottom) {
@@ -555,43 +702,62 @@ function hitLanterns(moth, pose) {
 function finishFlight() {
   document.querySelector("#final-score").textContent = formatScore(run.score);
   document.querySelector("#final-record").textContent = formatScore(best);
+  resetVoiceFlight(voiceFlight.silence);
   setPhase("over");
-  retryButton.focus({ preventScroll: true });
+  overTitle.focus({ preventScroll: true });
 }
 
 function moveMoth(delta) {
-  const { moth } = run;
-  if (mode === "voice" && voiceFlight.pitch !== null) {
-    const target = FIELD_HEIGHT * (VOICE_BOTTOM_Y - (VOICE_BOTTOM_Y - VOICE_TOP_Y) * pitchFraction(voiceFlight.pitch));
-    const distance = (target - moth.y) * (1 - Math.exp(-delta / .12));
-    const step = clamp(distance, -520 * delta, 520 * delta);
-    moth.y += step;
-    moth.velocity = step / delta;
-    return;
+  if (delta <= 0) return;
+  const { moth, levelCount } = run;
+  const response = 1 - Math.exp(-delta / MOTH_RESPONSE_TIME);
+  const previousY = moth.y;
+  if (voiceFlight.pitch !== null) {
+    const target = clamp(pitchLevelPosition(voiceFlight.pitch), 0, levelCount - 1);
+    const maxStep = MOTH_VERTICAL_SPEED * delta / flightLevelSpacing(levelCount);
+    const step = clamp((target - moth.level) * response, -maxStep, maxStep);
+    setMothLevel(moth.level + step);
   }
-  moth.velocity += GRAVITY * delta;
-  if (mode === "voice") moth.velocity = clamp(moth.velocity, 0, 290);
-  moth.y += moth.velocity * delta;
+  const tilt = clamp((moth.y - previousY) / (delta * 900), -.28, .28);
+  moth.tilt += (tilt - moth.tilt) * response;
+}
+
+function updateRecoil(delta) {
+  const { recoil } = run;
+  const next = Math.min(1, recoil.progress + delta / RECOIL_DURATION);
+  const shift = recoil.distance * ((1 - recoil.progress) ** 2 - (1 - next) ** 2);
+  for (const gate of run.gates) gate.x += shift;
+  recoil.progress = next;
+  if (next === 1) run.recoil = null;
 }
 
 function updateFlight(delta) {
   if (delta <= 0) return;
   run.elapsed += delta;
   moveMoth(delta);
+  if (run.recoil) {
+    updateRecoil(delta);
+    return;
+  }
   const { moth } = run;
   if (moth.y <= 19 + MOTH_RADIUS || moth.y >= FIELD_HEIGHT - 23 - MOTH_RADIUS) {
     finishFlight();
     return;
   }
-  const speed = 178 + Math.min(70, run.score * 2.6);
+  const speed = run.course.speed + Math.min(70, run.score * 2.6);
+  for (const gate of run.gates) gate.x -= speed * delta;
   for (const gate of run.gates) {
-    gate.x -= speed * delta;
+    if (gate.scored) continue;
     const pose = gatePose(gate, run.elapsed);
     if (hitLanterns(moth, pose)) {
-      finishFlight();
+      if (run.course.immortal) {
+        run.recoil = { progress: 0, distance: Math.min(MAX_RECOIL_DISTANCE, width * .35) };
+      } else {
+        finishFlight();
+      }
       return;
     }
-    if (!gate.scored && gate.x + LANTERN_WIDTH + MOTH_RADIUS + 8 < moth.x) {
+    if (gate.x + LANTERN_WIDTH + MOTH_RADIUS + 8 < moth.x) {
       gate.scored = true;
       run.score += 1;
       scoreLabel.textContent = formatScore(run.score);
@@ -604,12 +770,6 @@ function updateFlight(delta) {
   }
   if (run.gates[0].x < -60) run.gates.shift();
   fillCourse();
-  for (const particle of run.particles) {
-    particle.x += particle.dx * delta;
-    particle.y += particle.dy * delta;
-    particle.life -= delta;
-  }
-  run.particles = run.particles.filter((particle) => particle.life > 0);
 }
 
 function togglePause() {
@@ -623,8 +783,6 @@ function togglePause() {
 }
 
 voiceButton.addEventListener("click", () => { void startVoice(); });
-document.querySelector("#start-keyboard").addEventListener("click", startKeyboard);
-launchButton.addEventListener("click", flap);
 captureNoteButton.addEventListener("click", captureNote);
 document.querySelector("#cancel-setup").addEventListener("click", () => returnToMenu());
 quitReadyButton.addEventListener("click", () => returnToMenu());
@@ -632,46 +790,54 @@ document.querySelector("#quit-paused").addEventListener("click", () => returnToM
 document.querySelector("#quit-over").addEventListener("click", () => returnToMenu());
 pauseButton.addEventListener("click", togglePause);
 resumeButton.addEventListener("click", togglePause);
-retryButton.addEventListener("click", () => prepareFlight(mode));
 calibrateButton.addEventListener("click", beginCalibration);
 deviceSelect.addEventListener("change", () => { void startVoice(deviceSelect.value); });
+difficultySelect.addEventListener("change", () => {
+  difficultyLevel = Number(difficultySelect.value);
+  storeNumber(DIFFICULTY_KEY, difficultyLevel);
+});
+flightLevelsSelect.addEventListener("change", () => {
+  flightLevelCount = Number(flightLevelsSelect.value);
+  storeNumber(FLIGHT_LEVELS_KEY, flightLevelCount);
+  if (phase === "ready") resetRun();
+});
+immortalityToggle.addEventListener("change", () => {
+  immortalityEnabled = immortalityToggle.checked;
+  storeNumber(IMMORTALITY_KEY, Number(immortalityEnabled));
+});
 sensitivity.addEventListener("input", () => {
   sensitivityAmount = Number(sensitivity.value);
   storeNumber("night-flight-sensitivity", sensitivityAmount);
   drawSensitivity();
 });
 
-stage.addEventListener("pointerdown", (event) => {
-  if (event.button === 0 && event.isPrimary && !event.target.closest("button")) flap();
-});
-
 document.addEventListener("keydown", (event) => {
   if (event.target.closest?.("input, select, textarea")) return;
-  const button = event.target.closest?.("button:not([hidden])");
   if (event.code === "Escape" && (phase === "playing" || phase === "paused")) {
     event.preventDefault();
     if (!event.repeat) togglePause();
-  } else if (mode === "keyboard" && event.code === "Space" && (!button || button === launchButton || button.closest("[hidden]"))) {
-    if (phase !== "menu" && phase !== "ready" && phase !== "playing") return;
-    event.preventDefault();
-    if (event.repeat) return;
-    if (phase === "menu") startKeyboard();
-    flap();
   }
 });
 
 document.addEventListener("visibilitychange", () => {
   if (document.hidden && phase === "playing") togglePause();
+  else if (phase === "over") {
+    resetVoiceFlight();
+    setPhase("over");
+  }
 });
 window.addEventListener("pagehide", () => returnToMenu({ focus: false }));
 
 recordLabel.textContent = formatScore(best);
+difficultySelect.value = String(difficultyLevel);
+updatePitchRange();
+immortalityToggle.checked = immortalityEnabled;
 const brandMoth = document.querySelector("#brand-moth");
 drawMothEmblem(brandMoth, .65);
 document.querySelector('link[rel="icon"]').href = brandMoth.toDataURL();
 drawMothEmblem(document.querySelector("#intro-moth"), 1.73);
-flightPitch.style.setProperty("--flight-pitch-top", `${VOICE_TOP_Y * 100}%`);
-flightPitch.style.setProperty("--flight-pitch-bottom", `${100 - VOICE_BOTTOM_Y * 100}%`);
+flightPitch.style.setProperty("--flight-pitch-top", `${FLIGHT_TOP_Y * 100}%`);
+flightPitch.style.setProperty("--flight-pitch-bottom", `${100 - FLIGHT_BOTTOM_Y * 100}%`);
 drawSensitivity();
 resetRun();
 resetVoiceFlight();
@@ -686,6 +852,8 @@ function frame(now) {
   waveformTime = now / 1000;
   updateVoice(delta);
   if (phase === "playing") updateFlight(delta);
+  else if (phase === "ready") moveMoth(delta);
+  if (phase === "playing" || phase === "ready") drawFlightPitch();
   drawField(ctx, width, phase, run, waveformTime);
   requestAnimationFrame(frame);
 }

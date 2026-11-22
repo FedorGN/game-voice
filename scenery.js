@@ -80,11 +80,10 @@ function drawMothEmblem(canvas, size) {
 
 function gatePose(gate, elapsed) {
   const sway = Math.sin(elapsed * 1.65 + gate.phase);
-  const lift = Math.sin(elapsed * 1.2 + gate.phase) * 11;
   return {
     x: gate.x + sway * 8,
-    top: gate.center - gate.gap / 2 + lift,
-    bottom: gate.center + gate.gap / 2 + lift,
+    top: gate.top,
+    bottom: gate.bottom,
   };
 }
 
@@ -187,15 +186,18 @@ function drawFireflies(ctx, width, time) {
   ctx.restore();
 }
 
-function drawTrail(ctx, particles) {
+function drawFlightLevels(ctx, width, levelCount) {
   ctx.save();
-  ctx.fillStyle = "#ffd193";
-  for (const particle of particles) {
-    ctx.globalAlpha = particle.life * 1.6;
-    ctx.beginPath();
-    ctx.arc(particle.x, particle.y, particle.size, 0, Math.PI * 2);
-    ctx.fill();
+  ctx.strokeStyle = "#d6bfdc28";
+  ctx.lineWidth = 1;
+  ctx.setLineDash([4, 7]);
+  ctx.beginPath();
+  for (let level = 0; level < levelCount; level++) {
+    const y = flightLevelY(level, levelCount);
+    ctx.moveTo(0, y);
+    ctx.lineTo(width, y);
   }
+  ctx.stroke();
   ctx.restore();
 }
 
@@ -209,19 +211,18 @@ function drawField(ctx, width, phase, run, time) {
     return;
   }
 
+  drawFlightLevels(ctx, width, run.levelCount);
   for (const gate of run.gates) {
     const pose = gatePose(gate, run.elapsed);
     drawLantern(ctx, pose.x, pose.top - LANTERN_HEIGHT / 2, time, true);
     drawLantern(ctx, pose.x, pose.bottom + LANTERN_HEIGHT / 2, time, false);
   }
 
-  drawTrail(ctx, run.particles);
   ctx.save();
   ctx.shadowColor = "#ffd295";
   ctx.shadowBlur = 15;
   const flutter = .74 + Math.sin(time * 19) * .18;
-  const hover = phase === "ready" ? Math.sin(time * 3) * 4 : 0;
-  const tilt = Math.max(-.34, Math.min(.6, run.moth.velocity / 630));
-  drawMoth(ctx, run.moth.x, run.moth.y + hover, .52, flutter, tilt + .3);
+  const recoil = run.recoil ? Math.sin(Math.PI * run.recoil.progress) : 0;
+  drawMoth(ctx, run.moth.x - 18 * recoil, run.moth.y, .52, flutter, .3 + run.moth.tilt - .55 * recoil);
   ctx.restore();
 }

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#100e19">
-  <meta name="description" content="Проведи мотылька между фонарями. Управляй голосом, пробелом или касанием.">
+  <meta name="description" content="Управляй мотыльком голосом и проведи его между фонарями.">
   <title>Ночной полёт</title>
   <link rel="icon" href="data:,">
   <link rel="stylesheet" href="styles.css">
@@ -31,14 +31,40 @@
         <canvas id="field" aria-hidden="true"></canvas>
         <div class="hud">
           <div class="score"><span>Счёт</span><strong id="score">00</strong></div>
+          <div class="flight-settings" id="flight-settings">
+            <label for="difficulty">Сложность</label>
+            <select id="difficulty">
+              <option value="1">1</option>
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5" selected>5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+              <option value="8">8</option>
+              <option value="9">9</option>
+              <option value="10">10</option>
+            </select>
+            <label for="flight-levels">Отметки высоты</label>
+            <select id="flight-levels">
+              <option value="2">2</option>
+              <option value="3">3</option>
+              <option value="4">4</option>
+              <option value="5" selected>5</option>
+              <option value="6">6</option>
+              <option value="7">7</option>
+            </select>
+            <label for="immortality">Бессмертие</label>
+            <input id="immortality" type="checkbox">
+          </div>
           <button type="button" class="icon-button pause-button" id="pause" aria-label="Пауза" title="Пауза (Esc)" hidden>
             <span class="pause-icon" aria-hidden="true"></span>
           </button>
         </div>
-        <div class="flight-pitch" id="flight-pitch" aria-hidden="true" hidden>
-          <span class="flight-pitch-label flight-pitch-high" id="flight-pitch-high"></span>
-          <span class="flight-pitch-label flight-pitch-low" id="flight-pitch-low"></span>
-          <span class="flight-pitch-marker" id="flight-pitch-marker" hidden></span>
+        <div class="flight-pitch" id="flight-pitch" role="group" aria-label="Шкала нот" hidden>
+          <span class="flight-pitch-window" id="flight-pitch-window" aria-hidden="true" hidden></span>
+          <div id="flight-pitch-labels"></div>
+          <span class="flight-pitch-marker" id="flight-pitch-marker" role="img" hidden></span>
         </div>
 
         <div class="overlay" id="overlay">
@@ -50,7 +76,6 @@
               <button class="button primary" id="start-voice" type="button">
                 <span class="mic-icon" aria-hidden="true"></span>Играть голосом
               </button>
-              <button class="button secondary" id="start-keyboard" type="button">Пробел или тап</button>
             </div>
             <p class="error" id="mic-error" role="alert" hidden></p>
           </div>
@@ -72,10 +97,9 @@
           </div>
 
           <div class="screen compact" id="ready" hidden>
-            <h2 id="ready-title" tabindex="-1">Готов к полёту?</h2>
-            <p id="ready-description"></p>
-            <button class="button primary" id="launch" type="button">Начать полёт</button>
-            <button class="button secondary" id="quit-ready" type="button" hidden>В меню</button>
+            <h2 id="ready-title" tabindex="-1">Диапазон настроен</h2>
+            <p>Сделай короткую паузу, затем запой. В тишине мотылёк сохраняет последнюю высоту. <span id="flight-levels-hint" hidden></span></p>
+            <button class="button secondary" id="quit-ready" type="button">В меню</button>
           </div>
 
           <div class="screen compact" id="paused" hidden>
@@ -87,20 +111,17 @@
           </div>
 
           <div class="screen compact" id="game-over" hidden>
-            <h2>Полёт окончен</h2>
+            <h2 id="over-title" tabindex="-1" aria-describedby="restart-instructions">Полёт окончен</h2>
             <div class="finish-score">
               <div><span>Счёт</span><strong id="final-score">00</strong></div>
               <div><span>Рекорд</span><strong id="final-record">00</strong></div>
             </div>
-            <div class="actions">
-              <button class="button primary" id="retry" type="button">Ещё полёт</button>
-              <button class="button secondary" id="quit-over" type="button">В меню</button>
-            </div>
+            <p id="restart-instructions">Сделай короткую паузу и запой, чтобы начать новый полёт.</p>
+            <button class="button secondary" id="quit-over" type="button">В меню</button>
           </div>
         </div>
         <div class="stage-legend" aria-hidden="true">
-          <span id="keyboard-legend"><kbd>Пробел</kbd> Взмах</span>
-          <span id="voice-legend" hidden>Выше тон — выше полёт</span>
+          <span id="voice-legend">Выше тон — выше полёт</span>
           <span><kbd>Esc</kbd> Пауза</span>
         </div>
       </section>
@@ -123,7 +144,7 @@
           <div class="meter-labels" aria-hidden="true"><span>Тише</span><span>Громче</span></div>
 
           <div class="pitch-scale" id="pitch-scale" hidden>
-            <div class="range-heading"><span>Высота тона</span><span class="pitch-value" id="pitch-value">— Гц</span></div>
+            <div class="range-heading"><span id="pitch-value-label">Нота</span><span class="pitch-value" id="pitch-value">—</span></div>
             <div class="pitch-track" aria-hidden="true"><span id="pitch-marker" hidden></span></div>
             <div class="meter-labels"><span id="low-note">Низкая</span><span id="high-note">Высокая</span></div>
           </div>
@@ -142,13 +163,6 @@
           <button class="button outline" id="calibrate" type="button" disabled>Настроить диапазон голоса</button>
         </div>
 
-        <div class="keyboard-control">
-          <span class="control-icon"><span class="keyboard-icon" aria-hidden="true"></span></span>
-          <div>
-            <h3>Пробел или тап</h3>
-            <p>Нажми пробел или коснись поля, чтобы взлететь.</p>
-          </div>
-        </div>
         <p class="privacy">Звук обрабатывается в браузере.</p>
       </aside>
     </div>

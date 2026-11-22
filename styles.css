@@ -75,7 +75,6 @@ button { color: inherit; }
   background-size: cover;
   background-position: center;
   box-shadow: 0 16px 65px #10091368, inset 0 0 0 3px #0a071642;
-  touch-action: manipulation;
 }
 
 #field { position: absolute; inset: 0; display: block; width: 100%; height: 100%; }
@@ -96,6 +95,28 @@ button { color: inherit; }
 .score strong {
   font: 400 2.45rem/1 Georgia, serif;
   font-variant-numeric: tabular-nums;
+}
+
+.flight-settings {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 5px 8px;
+  color: #dbcddc;
+  font-size: .875rem;
+  text-shadow: 0 2px 12px #100d16;
+  pointer-events: auto;
+}
+
+.flight-settings select { width: auto; }
+
+.flight-settings input[type="checkbox"] {
+  justify-self: end;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  accent-color: var(--gold);
+  cursor: pointer;
 }
 
 .icon-button {
@@ -124,23 +145,33 @@ button { color: inherit; }
   background:
     linear-gradient(#f0c785a3, #d8b9f080) 0 0 / 2px 100% no-repeat,
     linear-gradient(#d6bfdc95, #d6bfdc95) 0 100% / 11px 1px no-repeat,
-    repeating-linear-gradient(180deg, #d6bfdc95 0 1px, transparent 1px 25%);
+    repeating-linear-gradient(180deg, #d6bfdc95 0 1px, transparent 1px var(--flight-pitch-step));
+}
+
+.flight-pitch-window {
+  position: absolute;
+  inset-inline-start: -4px;
+  width: 10px;
+  border-radius: 4px;
+  background: #bfe9bf4d;
+  outline: 1px solid #bfe9bf80;
 }
 
 .flight-pitch-label {
   position: absolute;
   inset-inline-start: 16px;
+  translate: 0 -50%;
   width: max-content;
   font-size: .75rem;
   font-variant-numeric: tabular-nums;
   text-shadow: 0 1px 5px #0c0914, 0 0 8px #0c0914;
 }
 
-.flight-pitch-high { inset-block-start: 0; }
-.flight-pitch-low { inset-block-end: 0; }
+.flight-pitch-label[aria-current="true"] { color: #bfe9bf; font-weight: 700; }
 
 .flight-pitch-marker {
   position: absolute;
+  top: clamp(-10px, var(--pitch-top), calc(100% + 10px));
   inset-inline-start: 1px;
   width: 10px;
   height: 10px;
@@ -149,6 +180,12 @@ button { color: inherit; }
   border-radius: 50%;
   background: var(--gold);
   box-shadow: 0 0 11px #f4bd69b0;
+}
+
+.flight-pitch-marker[data-in-tune="true"] {
+  border-color: #e4f7db;
+  background: #bfe9bf;
+  box-shadow: 0 0 11px #bfe9bfab;
 }
 
 .overlay {
@@ -319,7 +356,7 @@ kbd {
 
 .controls h2 { margin: 0 0 21px; font-size: 1.22rem; font-weight: 650; letter-spacing: -.025em; }
 .voice-control { display: grid; align-content: start; }
-.control-heading, .keyboard-control { display: flex; align-items: flex-start; gap: 11px; }
+.control-heading { display: flex; align-items: flex-start; gap: 11px; }
 
 .control-icon {
   flex: 0 0 39px;
@@ -416,19 +453,6 @@ select {
   font-size: .875rem;
 }
 
-.keyboard-control { margin-top: 23px; padding-top: 21px; border-top: 1px solid var(--line); }
-.keyboard-control .control-icon { color: #d6badc; }
-.keyboard-control p { font-size: .925rem; line-height: 1.45; }
-
-.keyboard-icon {
-  width: 20px;
-  height: 13px;
-  border: 1.4px solid currentColor;
-  border-radius: 3px;
-  background: repeating-linear-gradient(90deg, currentColor 0 2px, transparent 2px 4px) center 3px / 12px 2px no-repeat,
-    linear-gradient(currentColor, currentColor) center 7px / 8px 1px no-repeat;
-}
-
 .controls .privacy { margin-top: auto; padding-top: 23px; font-size: .8125rem; }
 .screen .error { max-width: 45ch; margin: 13px auto 0; font-size: .9rem; line-height: 1.4; color: #ffb4ad; }
 
@@ -447,7 +471,8 @@ select {
   .controls { padding: 18px; }
   .stage-legend { inset-inline: 13px; }
   .hud { inset: 16px 14px auto; }
-  .flight-pitch { inset-inline-start: 16px; }
+  .flight-pitch { inset-inline-start: 49px; }
+  .flight-pitch-label { inset-inline: auto 16px; font-size: .7rem; }
   .score strong { font-size: 2rem; }
   .screen h1 { font-size: clamp(2.55rem, 9vw, 4.4rem); }
 }
